@@ -6,6 +6,8 @@
 #include <errno.h>
 #include <string.h>
 // #include <sys/types.h>
+#include <stdint.h>
+
 
 #define UNUSED(x) (void)(x)
 
@@ -22,8 +24,34 @@ struct t_eventData
 
 struct gpioline_t *strobe_pin; // used in signal handler
 
-int main()
+int main(int argc, char **argv)
 {
+   int option= 0;
+	uint16_t pulse_period= 16682; //defaults
+	uint8_t gpio_pin= 23;
+	while ((option = getopt(argc, argv, "hp:g:")) != -1) {
+      switch (option) {
+         case 'h': 
+				printf("tpulse options\n"
+					"  -h\t\t"
+					"Print this help and exit.\n");
+				printf("  -p\t\t"
+					"Specify period in millisecond, e.g -p16667; default is 16682\n");
+				printf("  -a\t\t"
+					"Specify which RPi GPIO pin to use, e.g. -g18; default is GPIO pin 23\n");
+            exit(0);
+         case 'p':
+            pulse_period = atoi(optarg);
+				break;
+         case 'g':
+            gpio_pin = atoi(optarg);
+				break;
+			case '?':
+            printf("unknown option: %c\n", optopt);
+            exit(1);
+      }
+   }
+   printf("Pulsing GPIO %u with a period of %u milliseconds.\n", gpio_pin, pulse_period);
    //set up GPIO pin:
    struct gpiod_chip *chip;
    chip = gpiod_chip_open_by_name("gpiochip0");
@@ -34,7 +62,7 @@ int main()
    }
 	else
 	{
-		stobe_pin = gpiod_chip_get_line(chip, 18);
+		stobe_pin = gpiod_chip_get_line(chip, gpio_pin);
 		if (!stobe_pin)
       {
 			fprintf(stderr, "gpiod_chip_get_line failed");
@@ -60,7 +88,7 @@ int main()
    struct itimerspec its = {.it_value.tv_sec = 0,
                             .it_value.tv_nsec = 1000,
                             .it_interval.tv_sec = 0,
-                            .it_interval.tv_nsec = 8341000};
+                            .it_interval.tv_nsec = (pulse_period*1000/2)};
 
    sev.sigev_notify = SIGEV_SIGNAL; // Linux-specific
    sev.sigev_signo = SIGRTMIN;
@@ -90,7 +118,7 @@ int main()
       exit(-1);
    }
 
-   printf("Press ENTER to Exit\n");
+   printf("   Press ENTER to Exit\n");
    while (getchar() != '\n') {}
    return 0;
 }
