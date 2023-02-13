@@ -7,22 +7,23 @@
 #include <string.h>
 // #include <sys/types.h>
 #include <stdint.h>
-
-
-#define UNUSED(x) (void)(x)
-
+#include <sys/resource.h> //setpriority
+#include <sched.h> //setsched
 #include <gpiod.h>
-struct gpiod_chip *chip;
-struct gpiod_line *stobe_pin;
 
+// prototypes
 static void handler(int sig, siginfo_t *si, void *uc);
+bool set_scheduling();
 
 struct t_eventData
 {
    int timer_count; //used for odd/even
 };
 
-struct gpioline_t *strobe_pin; // used in signal handler
+struct gpiod_chip *chip;
+struct gpiod_line *strobe_pin; // used in signal handler
+
+#define UNUSED(x) (void)(x)
 
 int main(int argc, char **argv)
 {
@@ -51,7 +52,8 @@ int main(int argc, char **argv)
             exit(1);
       }
    }
-   printf("Pulsing GPIO %u with a period of %u milliseconds.\n", gpio_pin, pulse_period);
+   set_scheduling();
+
    //set up GPIO pin:
    struct gpiod_chip *chip;
    chip = gpiod_chip_open_by_name("gpiochip0");
@@ -62,15 +64,15 @@ int main(int argc, char **argv)
    }
 	else
 	{
-		stobe_pin = gpiod_chip_get_line(chip, gpio_pin);
-		if (!stobe_pin)
+		strobe_pin = gpiod_chip_get_line(chip, gpio_pin);
+		if (!strobe_pin)
       {
 			fprintf(stderr, "gpiod_chip_get_line failed");
          exit(-1);
       }
 		else
 		{
-			if (gpiod_line_request_output(stobe_pin, "boomer", 0) < 0) // set as output
+			if (gpiod_line_request_output(strobe_pin, "boomer", 0) < 0) // set as output
          {
 				fprintf(stderr, "gpiod_line_request_output failed");
             exit(-1);
@@ -112,6 +114,7 @@ int main(int argc, char **argv)
       exit(-1);
    }
 
+   printf("Pulsing GPIO %u with a period of %u milliseconds.\n", gpio_pin, pulse_period);
    if (timer_settime(timerId, 0, &its, NULL) != 0) //start timer
    {
       fprintf(stderr, "Error timer_settime: %s\n", strerror(errno));
@@ -129,6 +132,27 @@ handler(int sig, siginfo_t *si, void *uc)
    UNUSED(sig);
    UNUSED(uc);
    struct t_eventData *data = (struct t_eventData *)si->_sifields._rt.si_sigval.sival_ptr;
-   gpiod_line_set_value(stobe_pin, (++data->timer_count & 0x1));
+   gpiod_line_set_value(strobe_pin, (++data->timer_count & 0x1));
    // printf("Timer fired %d\n", ++data->timer_count);
+}
+
+bool set_scheduling()
+{
+   char err_string[80];
+	int rc = setpriority(PRIO_PROCESS, 0, -20);
+	if (rc)
+	{
+      sprintf(err_string, "Error on setpriority %s\n", strerror(errno));
+		fprintf(stderr, err_string);
+ 		return true;
+	}
+	const struct sched_param priority = { 32 };
+	rc = sched_setscheduler(0, SCHED_FIFO, &priority);
+	if (rc)
+	{
+      sprintf(err_string, "Error on setscheduler %s\n", strerror(errno));
+		fprintf(stderr, err_string);
+ 		return true;
+	}
+	return false;
 }
