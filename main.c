@@ -22,6 +22,7 @@ struct t_eventData
    uint64_t timer_count; //used for odd/even
    uint32_t skip_frame;
    uint32_t number_of_frames_to_skip;
+   uint32_t skipped_frame_count;
    uint32_t extra_frame;
 };
 
@@ -34,7 +35,9 @@ int main(int argc, char **argv)
 	uint8_t gpio_pin= 23;
 
    struct t_eventData eventData = {
-      .timer_count= 0, .skip_frame= 0, .extra_frame= 0, .number_of_frames_to_skip= 0};
+      .timer_count= 0, 
+      .skip_frame= 0, .skipped_frame_count= 2, .number_of_frames_to_skip= 0, 
+      .extra_frame= 0};
 
 	while ((option = getopt(argc, argv, "hp:g:s:e:n:")) != -1) {
       switch (option) {
@@ -62,7 +65,7 @@ int main(int argc, char **argv)
          case 's':
             eventData.skip_frame= (atoi(optarg) * 2) + 1;
 				break;
-         case 'd':
+         case 'n':
             eventData.number_of_frames_to_skip= (atoi(optarg) * 2);
 				break;
          case 'e':
@@ -136,7 +139,8 @@ int main(int argc, char **argv)
 
    printf("Pulsing GPIO %u with a period of %u milliseconds", gpio_pin, pulse_period);
    if (eventData.skip_frame)
-      printf(" -- and skipping every %u frame.\n", (eventData.skip_frame/2));
+      printf(" -- and skipping every %u frame for %u frames.\n", 
+         eventData.skip_frame/2, eventData.number_of_frames_to_skip/2);
    else
       printf(".\n");
    
@@ -156,10 +160,22 @@ static void handler(int sig, siginfo_t *si, void *uc)
    UNUSED(sig);
    UNUSED(uc);
    struct t_eventData *data = (struct t_eventData *)si->_sifields._rt.si_sigval.sival_ptr;
+
    data->timer_count++;
-   if ((data->skip_frame == 0) || (data->timer_count % data->skip_frame != 0))
+   if (data->skip_frame > 0 && (data->timer_count % data->skip_frame == 0) && data->skipped_frame_count == 0)
+   {
+      data->skipped_frame_count= 1;
+      // printf("turning on skip count on timer_count=%llu\n", data->timer_count);
+   }
+
+   if (data->skip_frame == 0 || data->skipped_frame_count == 0)
       gpiod_line_set_value(data->strobe_pin, (data->timer_count & 0x1));
-   // printf("Timer fired %d\n", ++data->timer_count);
+
+   if (data->skipped_frame_count > 0 && ++data->skipped_frame_count >= data->number_of_frames_to_skip)
+   {
+      data->skipped_frame_count= 0;
+      // printf("turning off skip count on timer_count=%llu\n", data->timer_count);
+   }
 }
 
 bool set_scheduling()
