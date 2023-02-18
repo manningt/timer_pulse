@@ -15,13 +15,15 @@
 static void handler(int sig, siginfo_t *si, void *uc);
 bool set_scheduling();
 
+ // the following struct is written by main and used by the signal handler
 struct t_eventData
 {
-   int timer_count; //used for odd/even
+   struct gpiod_line *strobe_pin;
+   uint64_t timer_count; //used for odd/even
+   uint32_t skip_frame;
+   uint32_t number_of_frames_to_skip;
+   uint32_t extra_frame;
 };
-
-struct gpiod_chip *chip;
-struct gpiod_line *strobe_pin; // used in signal handler
 
 #define UNUSED(x) (void)(x)
 
@@ -30,7 +32,11 @@ int main(int argc, char **argv)
    int option= 0;
 	uint16_t pulse_period= 16682; //defaults
 	uint8_t gpio_pin= 23;
-	while ((option = getopt(argc, argv, "hp:g:")) != -1) {
+
+   struct t_eventData eventData = {
+      .timer_count= 0, .skip_frame= 0, .extra_frame= 0, .number_of_frames_to_skip= 0};
+
+	while ((option = getopt(argc, argv, "hp:g:s:e:n:")) != -1) {
       switch (option) {
          case 'h': 
 				printf("tpulse options\n"
@@ -40,12 +46,27 @@ int main(int argc, char **argv)
 					"Specify period in millisecond, e.g -p16667; default is 16682\n");
 				printf("  -a\t\t"
 					"Specify which RPi GPIO pin to use, e.g. -g18; default is GPIO pin 23\n");
+				printf("  -s\t\t"
+					"Skip pulses every 's' pulses; default is 0 - no pulse skipping\n");
+				printf("  -d\t\t"
+					"Number of pulses to skip; default is 1 (only used when -s is specified)\n");
+				printf("  -e\t\t"
+					"Insert a pulse every 'e' pulses; default is 0 - no extra pulses \n");
             exit(0);
          case 'p':
             pulse_period = atoi(optarg);
 				break;
          case 'g':
             gpio_pin = atoi(optarg);
+				break;
+         case 's':
+            eventData.skip_frame= (atoi(optarg) * 2) + 1;
+				break;
+         case 'd':
+            eventData.number_of_frames_to_skip= (atoi(optarg) * 2);
+				break;
+         case 'e':
+            eventData.extra_frame= (atoi(optarg) * 2) + 1;
 				break;
 			case '?':
             printf("unknown option: %c\n", optopt);
@@ -64,15 +85,15 @@ int main(int argc, char **argv)
    }
 	else
 	{
-		strobe_pin = gpiod_chip_get_line(chip, gpio_pin);
-		if (!strobe_pin)
+		eventData.strobe_pin= gpiod_chip_get_line(chip, gpio_pin);
+		if (!eventData.strobe_pin)
       {
 			fprintf(stderr, "gpiod_chip_get_line failed");
          exit(-1);
       }
 		else
 		{
-			if (gpiod_line_request_output(strobe_pin, "boomer", 0) < 0) // set as output
+			if (gpiod_line_request_output(eventData.strobe_pin, "boomer", 0) < 0) // set as output
          {
 				fprintf(stderr, "gpiod_line_request_output failed");
             exit(-1);
@@ -84,9 +105,8 @@ int main(int argc, char **argv)
    struct sigevent sev = {0};
    struct sigaction sa = {0}; //specifies the action when receiving a signal
 
-   struct t_eventData eventData = {.timer_count = 0};
-
    // specify start delay and interval - 8341000 is 16682 msec divide by 2
+   // the interval is a divide by 2 in order to assert/deassert during the interval
    struct itimerspec its = {.it_value.tv_sec = 0,
                             .it_value.tv_nsec = 1000,
                             .it_interval.tv_sec = 0,
@@ -114,7 +134,12 @@ int main(int argc, char **argv)
       exit(-1);
    }
 
-   printf("Pulsing GPIO %u with a period of %u milliseconds.\n", gpio_pin, pulse_period);
+   printf("Pulsing GPIO %u with a period of %u milliseconds", gpio_pin, pulse_period);
+   if (eventData.skip_frame)
+      printf(" -- and skipping every %u frame.\n", (eventData.skip_frame/2));
+   else
+      printf(".\n");
+   
    if (timer_settime(timerId, 0, &its, NULL) != 0) //start timer
    {
       fprintf(stderr, "Error timer_settime: %s\n", strerror(errno));
@@ -126,13 +151,14 @@ int main(int argc, char **argv)
    return 0;
 }
 
-static void
-handler(int sig, siginfo_t *si, void *uc)
+static void handler(int sig, siginfo_t *si, void *uc)
 {
    UNUSED(sig);
    UNUSED(uc);
    struct t_eventData *data = (struct t_eventData *)si->_sifields._rt.si_sigval.sival_ptr;
-   gpiod_line_set_value(strobe_pin, (++data->timer_count & 0x1));
+   data->timer_count++;
+   if ((data->skip_frame == 0) || (data->timer_count % data->skip_frame != 0))
+      gpiod_line_set_value(data->strobe_pin, (data->timer_count & 0x1));
    // printf("Timer fired %d\n", ++data->timer_count);
 }
 
