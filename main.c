@@ -20,10 +20,10 @@ struct t_eventData
 {
    struct gpiod_line *strobe_pin;
    uint64_t timer_count; //used for odd/even
-   uint32_t skip_frame;
-   uint32_t number_of_frames_to_skip;
-   uint32_t skipped_frame_count;
-   uint32_t extra_frame;
+   uint32_t skip_pulse_modulus;
+   uint32_t number_of_pulses_to_skip;
+   uint32_t skipped_pulse_count;
+   uint32_t extra_pulse_modulus;
 };
 
 #define UNUSED(x) (void)(x)
@@ -36,8 +36,8 @@ int main(int argc, char **argv)
 
    struct t_eventData eventData = {
       .timer_count= 0, 
-      .skip_frame= 0, .skipped_frame_count= 2, .number_of_frames_to_skip= 0, 
-      .extra_frame= 0};
+      .skip_pulse_modulus= 0, .skipped_pulse_count= 0, .number_of_pulses_to_skip= 2, 
+      .extra_pulse_modulus= 0};
 
 	while ((option = getopt(argc, argv, "hp:g:s:e:n:")) != -1) {
       switch (option) {
@@ -63,13 +63,13 @@ int main(int argc, char **argv)
             gpio_pin = atoi(optarg);
 				break;
          case 's':
-            eventData.skip_frame= (atoi(optarg) * 2) + 1;
+            eventData.skip_pulse_modulus= (atoi(optarg) * 2) + 1;
 				break;
          case 'n':
-            eventData.number_of_frames_to_skip= (atoi(optarg) * 2);
+            eventData.number_of_pulses_to_skip= (atoi(optarg) * 2);
 				break;
          case 'e':
-            eventData.extra_frame= (atoi(optarg) * 2) + 1;
+            eventData.extra_pulse_modulus= (atoi(optarg) * 4);
 				break;
 			case '?':
             printf("unknown option: %c\n", optopt);
@@ -110,10 +110,14 @@ int main(int argc, char **argv)
 
    // specify start delay and interval - 8341000 is 16682 msec divide by 2
    // the interval is a divide by 2 in order to assert/deassert during the interval
+
+   uint32_t interval_nanos= (pulse_period*1000/2);
+   if (eventData.extra_pulse_modulus > 0)
+      interval_nanos /= 2;  //twice as fast if inserting pulses
    struct itimerspec its = {.it_value.tv_sec = 0,
                             .it_value.tv_nsec = 1000,
                             .it_interval.tv_sec = 0,
-                            .it_interval.tv_nsec = (pulse_period*1000/2)};
+                            .it_interval.tv_nsec = interval_nanos};
 
    sev.sigev_notify = SIGEV_SIGNAL; // Linux-specific
    sev.sigev_signo = SIGRTMIN;
@@ -138,9 +142,12 @@ int main(int argc, char **argv)
    }
 
    printf("Pulsing GPIO %u with a period of %u milliseconds", gpio_pin, pulse_period);
-   if (eventData.skip_frame)
-      printf(" -- and skipping every %u frame for %u frames.\n", 
-         eventData.skip_frame/2, eventData.number_of_frames_to_skip/2);
+   if (eventData.skip_pulse_modulus)
+      printf(" -- and skipping %u pulses every %u pulses.\n", 
+          eventData.number_of_pulses_to_skip/2, eventData.skip_pulse_modulus/2);
+   else if (eventData.extra_pulse_modulus)
+      printf(" -- and inserting a pulse every %u pulses.\n", 
+         eventData.extra_pulse_modulus/4);
    else
       printf(".\n");
    
@@ -162,19 +169,37 @@ static void handler(int sig, siginfo_t *si, void *uc)
    struct t_eventData *data = (struct t_eventData *)si->_sifields._rt.si_sigval.sival_ptr;
 
    data->timer_count++;
-   if (data->skip_frame > 0 && (data->timer_count % data->skip_frame == 0) && data->skipped_frame_count == 0)
+   if (data->extra_pulse_modulus == 0)
    {
-      data->skipped_frame_count= 1;
-      // printf("turning on skip count on timer_count=%llu\n", data->timer_count);
-   }
+      if (data->skip_pulse_modulus > 0 && (data->timer_count % data->skip_pulse_modulus == 0) && data->skipped_pulse_count == 0)
+      {
+         data->skipped_pulse_count= 1;
+         // printf("turning on skip count on timer_count=%llu\n", data->timer_count);
+      }
 
-   if (data->skip_frame == 0 || data->skipped_frame_count == 0)
-      gpiod_line_set_value(data->strobe_pin, (data->timer_count & 0x1));
+      if (data->skip_pulse_modulus == 0 || data->skipped_pulse_count == 0)
+         gpiod_line_set_value(data->strobe_pin, (data->timer_count & 0x1));
 
-   if (data->skipped_frame_count > 0 && ++data->skipped_frame_count >= data->number_of_frames_to_skip)
+      if (data->skipped_pulse_count > 0 && ++data->skipped_pulse_count >= data->number_of_pulses_to_skip)
+      {
+         data->skipped_pulse_count= 0;
+         // printf("turning off skip count on timer_count=%llu\n", data->timer_count);
+      }
+   } else 
    {
-      data->skipped_frame_count= 0;
-      // printf("turning off skip count on timer_count=%llu\n", data->timer_count);
+      //timer running twice as fast, so assert for 2 cycles
+      static uint8_t fast_pulse_count= 0;
+      if (data->timer_count % data->extra_pulse_modulus == 0)
+         fast_pulse_count= 1; //start sequence
+      if (fast_pulse_count == 0)
+         gpiod_line_set_value(data->strobe_pin, ((data->timer_count >> 1) & 0x1)); //use bit 2
+      else
+      {
+         gpiod_line_set_value(data->strobe_pin, (fast_pulse_count == 2 || fast_pulse_count == 4));
+         // printf("timer_count=%llu strobe=%u\n", data->timer_count, (fast_pulse_count == 2 || fast_pulse_count == 4));
+         if (++fast_pulse_count >= 4)
+            fast_pulse_count= 0;
+      }
    }
 }
 
