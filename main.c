@@ -22,6 +22,7 @@
 #include <sched.h> //setsched
 #include <gpiod.h>
 #include <getopt.h> //optopt & optarg
+#include <gsl/gsl_statistics_int.h> //Gnu scientific lib for statistics
 
 #define PULSES_PER_SECOND 60
 #define FULL_PERIOD_NANOS 16667
@@ -208,7 +209,7 @@ static void handler(int sig, siginfo_t *si, void *uc)
    gpiod_line_set_value(data->strobe_pin, current_output);
 
    if (data->timer_count < SAMPLES)
-      data->timestamp_nanos[data->timer_count++]= current_time.tv_sec*1E6 + current_time.tv_nsec;
+      data->timestamp_nanos[data->timer_count++]= current_time.tv_sec*1E9 + current_time.tv_nsec;
 }
 
 #else
@@ -258,9 +259,28 @@ static void handler(int sig, siginfo_t *si, void *uc)
 void do_analysis(struct t_eventData* data) 
 {
    int i;
-   for (i=1; i < 8; i++)
-      printf("%d-%d=%llu ", i, i-1, data->timestamp_nanos[i] - data->timestamp_nanos[i-1]);
-   printf("\n");
+   int deltas[SAMPLES];
+   int limit= 3600;
+   for (i=1; i <= limit; i++)
+      deltas[i-1]=  data->timestamp_nanos[i] - data->timestamp_nanos[i-1];
+
+   // for (i=1; i <= limit; i++)
+   //    printf("%d-%d=%u ", i, i-1, deltas[i-1]);
+   // printf(" HALF periods.\n");
+
+   uint8_t stride= 1;
+   int min, max;
+   int min_index, max_index;
+   int mean, sdeviation;
+   max= gsl_stats_int_max(deltas, stride, limit-1);
+   min= gsl_stats_int_min(deltas, stride, limit-1);
+   max_index= gsl_stats_int_max_index(deltas, stride, limit-1);
+   min_index= gsl_stats_int_min_index(deltas, stride, limit-1);
+   mean= gsl_stats_int_mean(deltas, stride, limit-1);
+   sdeviation= gsl_stats_int_sd(deltas, stride, limit-1);
+   printf("min=%d @ index=%d  max=%d @ index=%d mean=%d std_dev=%d\n", min, min_index, max, max_index, mean, sdeviation);
+   // void gsl_stats_int_minmax(int* min,int* max, const int deltas[], size_t stride, size_t (limit-1));
+   // printf("min=%d max=%d\n", min, max);
 }
 
 bool set_scheduling()
