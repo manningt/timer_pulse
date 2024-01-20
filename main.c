@@ -1,3 +1,15 @@
+/*
+  2 modes of operation: collect timestamps or do fault insertion (fault insertion is skipping or adding pulses)
+  The mode is compile time, as defined by the following #define.
+
+  In collect_timestamps mode, the handler stores the timestamps in an array.
+  When the program is stopped (hit ENTER), the main code will do analysis of the array.
+
+*/
+#define COLLECT_TIMESTAMPS
+
+
+#define _GNU_SOURCE // needs to be defined to remove intellisense errors on signal structs and timer defines
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -5,15 +17,17 @@
 #include <time.h>
 #include <errno.h>
 #include <string.h>
-// #include <sys/types.h>
 #include <stdint.h>
 #include <sys/resource.h> //setpriority
 #include <sched.h> //setsched
 #include <gpiod.h>
+#include <getopt.h> //optopt & optarg
 
-// prototypes
-static void handler(int sig, siginfo_t *si, void *uc);
-bool set_scheduling();
+#define PULSES_PER_SECOND 60
+#define FULL_PERIOD_NANOS 16667
+#define MEASUREMENT_PERIOD_SECONDS (5*60)
+#define SAMPLES (MEASUREMENT_PERIOD_SECONDS * PULSES_PER_SECOND)
+#define UNUSED(x) (void)(x)
 
  // the following struct is written by main and used by the signal handler
 struct t_eventData
@@ -24,22 +38,28 @@ struct t_eventData
    uint32_t number_of_pulses_to_skip;
    uint32_t skipped_pulse_count;
    uint32_t extra_pulse_modulus;
+   uint64_t timestamp_nanos[SAMPLES];
 };
 
-#define UNUSED(x) (void)(x)
+// prototypes
+static void handler(int sig, siginfo_t *si, void *uc);
+bool set_scheduling();
+void do_analysis(struct t_eventData* data);
+
 
 int main(int argc, char **argv)
 {
    int option= 0;
-	uint16_t pulse_period= 16682; //defaults
+	uint16_t pulse_period= FULL_PERIOD_NANOS; //16682; //defaults
 	uint8_t gpio_pin= 23;
+   uint32_t start_seconds= 0; //used 32 instead of 64 in order to use atoi
 
    struct t_eventData eventData = {
       .timer_count= 0, 
       .skip_pulse_modulus= 0, .skipped_pulse_count= 0, .number_of_pulses_to_skip= 2, 
       .extra_pulse_modulus= 0};
 
-	while ((option = getopt(argc, argv, "hp:g:s:e:n:")) != -1) {
+	while ((option = getopt(argc, argv, "hp:g:s:e:n:t:")) != -1) {
       switch (option) {
          case 'h': 
 				printf("tpulse options\n"
@@ -55,6 +75,8 @@ int main(int argc, char **argv)
 					"Number of pulses to skip; default is 1 (only used when -s is specified)\n");
 				printf("  -e\t\t"
 					"Insert a pulse every 'e' pulses; default is 0 - no extra pulses \n");
+				printf("  -t\t\t"
+					"Specify the epoch start time in seconds \n");
             exit(0);
          case 'p':
             pulse_period = atoi(optarg);
@@ -70,6 +92,9 @@ int main(int argc, char **argv)
 				break;
          case 'e':
             eventData.extra_pulse_modulus= (atoi(optarg) * 4);
+				break;
+         case 't':
+            start_seconds= (atoi(optarg));
 				break;
 			case '?':
             printf("unknown option: %c\n", optopt);
@@ -106,19 +131,6 @@ int main(int argc, char **argv)
 
    timer_t timerId = 0;
    struct sigevent sev = {0};
-   struct sigaction sa = {0}; //specifies the action when receiving a signal
-
-   // specify start delay and interval - 8341000 is 16682 msec divide by 2
-   // the interval is a divide by 2 in order to assert/deassert during the interval
-
-   uint32_t interval_nanos= (pulse_period*1000/2);
-   if (eventData.extra_pulse_modulus > 0)
-      interval_nanos /= 2;  //twice as fast if inserting pulses
-   struct itimerspec its = {.it_value.tv_sec = 0,
-                            .it_value.tv_nsec = 1000,
-                            .it_interval.tv_sec = 0,
-                            .it_interval.tv_nsec = interval_nanos};
-
    sev.sigev_notify = SIGEV_SIGNAL; // Linux-specific
    sev.sigev_signo = SIGRTMIN;
    sev.sigev_value.sival_ptr = &eventData;
@@ -129,11 +141,11 @@ int main(int argc, char **argv)
       exit(-1);
    }
 
-   // specify signal and handler
+   struct sigaction sa = {0}; //specifies the action when receiving a signal
    sa.sa_flags = SA_SIGINFO;
    sa.sa_sigaction = handler;
-
    sigemptyset(&sa.sa_mask); //initialize signal
+
    //  printf("Establishing handler for signal %d\n", SIGRTMIN);
    if (sigaction(SIGRTMIN, &sa, NULL) == -1)
    {
@@ -150,8 +162,27 @@ int main(int argc, char **argv)
          eventData.extra_pulse_modulus/4);
    else
       printf(".\n");
+
+   // specify start delay and interval - 8341000 is 16682 msec divide by 2
+   // the interval is a divide by 2 in order to assert/deassert during the interval
+   uint32_t interval_nanos= (pulse_period*1000/2);
+
+   if (eventData.extra_pulse_modulus > 0)
+      interval_nanos /= 2;  //twice as fast if inserting pulses
+
+
+   struct itimerspec its = {.it_value.tv_sec = start_seconds,
+                            .it_value.tv_nsec = 1000,
+                            .it_interval.tv_sec = 0,
+                            .it_interval.tv_nsec = interval_nanos};
    
-   if (timer_settime(timerId, 0, &its, NULL) != 0) //start timer
+   int timerMode= 0;
+   if (start_seconds > 0) {
+      printf("\n\t start_seconds=%u\n", start_seconds);
+      timerMode= TIMER_ABSTIME;
+   }
+
+   if (timer_settime(timerId, timerMode, &its, NULL) != 0) //start timer
    {
       fprintf(stderr, "Error timer_settime: %s\n", strerror(errno));
       exit(-1);
@@ -159,8 +190,28 @@ int main(int argc, char **argv)
 
    printf("   Press ENTER to Exit\n");
    while (getchar() != '\n') {}
+   do_analysis(&eventData);
    return 0;
 }
+
+#ifdef COLLECT_TIMESTAMPS
+static void handler(int sig, siginfo_t *si, void *uc)
+{
+   UNUSED(sig);
+   UNUSED(uc);
+   struct t_eventData *data = (struct t_eventData *)si->_sifields._rt.si_sigval.sival_ptr;
+   static uint8_t current_output= 1;
+   static struct timespec current_time;
+
+   clock_gettime(CLOCK_MONOTONIC_RAW, &current_time);
+   current_output ^= 1;
+   gpiod_line_set_value(data->strobe_pin, current_output);
+
+   if (data->timer_count < SAMPLES)
+      data->timestamp_nanos[data->timer_count++]= current_time.tv_sec*1E6 + current_time.tv_nsec;
+}
+
+#else
 
 static void handler(int sig, siginfo_t *si, void *uc)
 {
@@ -201,6 +252,15 @@ static void handler(int sig, siginfo_t *si, void *uc)
             fast_pulse_count= 0;
       }
    }
+}
+#endif
+
+void do_analysis(struct t_eventData* data) 
+{
+   int i;
+   for (i=1; i < 8; i++)
+      printf("%d-%d=%llu ", i, i-1, data->timestamp_nanos[i] - data->timestamp_nanos[i-1]);
+   printf("\n");
 }
 
 bool set_scheduling()
