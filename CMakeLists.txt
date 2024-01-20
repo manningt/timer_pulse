@@ -13,6 +13,7 @@ set_property(GLOBAL PROPERTY C_STANDARD 99)
 find_package(BLAS REQUIRED) # Basic Linear Algebra Subprograms
 find_package(GSL REQUIRED)
 include_directories("/usr/local/include/gsl")
+add_compile_definitions(MEASUREMENT_PERIOD_MINUTES=5)
 
 # file(GLOB SRC_FILES CONFIGURE_DEPENDS "*.c")
 add_executable(${Executable_Name} main.c)

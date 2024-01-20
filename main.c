@@ -26,7 +26,12 @@
 
 #define PULSES_PER_SECOND 60
 #define FULL_PERIOD_NANOS 16667
-#define MEASUREMENT_PERIOD_SECONDS (5*60)
+
+#ifndef MEASUREMENT_PERIOD_MINUTES
+   #define MEASUREMENT_PERIOD_MINUTES 1
+#endif
+
+#define MEASUREMENT_PERIOD_SECONDS (MEASUREMENT_PERIOD_MINUTES*60)
 #define SAMPLES (MEASUREMENT_PERIOD_SECONDS * PULSES_PER_SECOND)
 #define UNUSED(x) (void)(x)
 
@@ -258,13 +263,13 @@ static void handler(int sig, siginfo_t *si, void *uc)
 
 void do_analysis(struct t_eventData* data) 
 {
-   int i;
-   int deltas[SAMPLES];
-   int limit= 3600;
+   uint32_t i;
+   uint32_t limit= SAMPLES;
+   int deltas[SAMPLES]; //gsl requires int (not uint32_t)
    for (i=1; i <= limit; i++)
       deltas[i-1]=  data->timestamp_nanos[i] - data->timestamp_nanos[i-1];
 
-   // for (i=1; i <= limit; i++)
+   // for (i=1; i <= 8; i++)
    //    printf("%d-%d=%u ", i, i-1, deltas[i-1]);
    // printf(" HALF periods.\n");
 
@@ -278,9 +283,21 @@ void do_analysis(struct t_eventData* data)
    min_index= gsl_stats_int_min_index(deltas, stride, limit-1);
    mean= gsl_stats_int_mean(deltas, stride, limit-1);
    sdeviation= gsl_stats_int_sd(deltas, stride, limit-1);
-   printf("min=%d @ index=%d  max=%d @ index=%d mean=%d std_dev=%d\n", min, min_index, max, max_index, mean, sdeviation);
-   // void gsl_stats_int_minmax(int* min,int* max, const int deltas[], size_t stride, size_t (limit-1));
-   // printf("min=%d max=%d\n", min, max);
+   printf("min= %d @ index=%d  max= %d @ index=%d mean =%d std_dev=%d\n", min, min_index, max, max_index, mean, sdeviation);
+
+   uint64_t end_minus_begin_nanos= data->timestamp_nanos[limit-1] - data->timestamp_nanos[0];
+   // uint64_t limit_nanos_precalc= ;
+   uint64_t limit_nanos;
+   limit_nanos= limit*16667*1000/2;
+   if (MEASUREMENT_PERIOD_MINUTES == 10)
+      limit_nanos= 299997666500;
+   else if (MEASUREMENT_PERIOD_MINUTES == 5)
+      limit_nanos= 149994666500;
+   else
+      limit_nanos= 29992266500;
+   // printf("limit_nanos_precalc = %llu minus limit_nanos = %lld  == %lld\n", limit_nanos_precalc, limit_nanos, limit_nanos_precalc - limit_nanos);
+   printf("end-begin= %llu for %u samples.  Ideal= %llu deviation= %lld\n",
+      end_minus_begin_nanos, limit, limit_nanos, end_minus_begin_nanos- limit_nanos);
 }
 
 bool set_scheduling()
